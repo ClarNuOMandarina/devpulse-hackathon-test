@@ -1,0 +1,42 @@
+================================================================================
+OPERATION-BASIS: DEVPULSE (github-multi-agent-skill.txt)
+================================================================================
+
+[SECTION 1: MANDATORY FIELDS]
+
+PROJECT_NAME: devpulse
+
+REPO_URL: https://github.com/ClarNuOMandarina/devpulse-hackathon-test
+
+PROJECT_GOAL: Hackathon sprint & time/task tracking CLI with JSON persistence and Markdown/XSS-escaped HTML summary reporting in Python 3.11 stdlib.
+
+TECH_STACK: Python 3.11 stdlib + unittest (zero external packages; Opera Web UI + git)
+
+MODULES_AND_OWNERSHIP:
+  - Task 1 (store) | Owner: Session Agent / Subagent | Allowed Files: src/devpulse/store.py, tests/test_store.py | Blocked-by: none | Summary: JSON task/timer CRUD & validation
+  - Task 2 (reporter) | Owner: Session Agent / Subagent | Allowed Files: src/devpulse/reporter.py, tests/test_reporter.py | Blocked-by: none | Summary: Markdown & XSS-escaped HTML sprint report generator
+  - Task 3 (cli+docs) | Owner: Session Agent / Subagent | Allowed Files: src/devpulse/cli.py, tests/test_cli.py, README.md | Blocked-by: Task 1, Task 2 | Summary: argparse CLI (add, start, stop, done, list, report), E2E CLI tests, and README.md
+
+VERIFICATION_COMMAND: python -m unittest discover -s tests -v
+
+DONE_CRITERIA:
+  1. All planned modules (#2-#4) are merged cleanly to main via Coordinator-reviewed PRs (Closes #N, [COORD:REVIEW] verdict=APPROVED, zero direct main commits, zero self-merges).
+  2. python -m unittest discover -s tests -v passes on clean main checkout with exit code 0 and 100% tests passing.
+  3. README.md accurately documents CLI commands, HTML/Markdown reporting, and verification command with zero conflict markers or secrets.
+
+HUMAN_OPERATOR_MODE: OPERA_WEB_PLUS_GIT
+
+
+[SECTION 2: OPTIONAL FIELDS]
+
+BASE_BRANCH: main
+
+AGENT_ROSTER: 1 Main Coordinator, 1 Session Agent, up to 3 Subagents
+
+STALE_CLAIM_TTL_MINUTES: 20
+
+REVIEW_MAX_ROUNDS: 3
+
+CONSTRAINTS: Disjoint file ownership per Issue; no direct commits to main; never force-push main; no self-merge; no gh CLI required; no leaked secrets
+
+ESCALATION_POLICY: [COORD:RULING] for spec ambiguity; status:needs-human after REVIEW_MAX_ROUNDS, missing auth, or destructive action
