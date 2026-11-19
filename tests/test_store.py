@@ -371,6 +371,198 @@ class StoreTestCase(unittest.TestCase):
         with self.assertRaises(store.StoreValidationError):
             store.validate_task(missing_key)
 
+    # ------------------------------------------------------------------
+    # Review round 1 additions (PR #5) — map to [COORD:REVIEW] findings
+    # ------------------------------------------------------------------
+
+    def _valid_task(self, **overrides: object) -> dict:
+        task = {
+            "id": 1,
+            "title": "Valid task",
+            "status": "todo",
+            "priority": "medium",
+            "tags": [],
+            "elapsed_seconds": 0,
+            "active_timer_start": None,
+            "created_at": "2026-11-19T10:00:00Z",
+            "updated_at": "2026-11-19T10:00:00Z",
+            "completed_at": None,
+        }
+        task.update(overrides)
+        return task
+
+    def test_save_store_valid_persist_and_schema_validation(self) -> None:
+        """Finding 1 [MAJOR]: direct save_store() persistence + schema rejections (AC #4)."""
+        task = self._valid_task()
+
+        # Valid payload persists and round-trips through load_store.
+        returned = store.save_store(
+            self.store_path, {"schema_version": 1, "next_id": 2, "tasks": [task]}
+        )
+        self.assertEqual(Path(returned), self.store_path)
+        self.assertTrue(self.store_path.exists())
+        reloaded = store.load_store(self.store_path)
+        self.assertEqual(reloaded["schema_version"], 1)
+        self.assertEqual(reloaded["next_id"], 2)
+        self.assertEqual([t["id"] for t in reloaded["tasks"]], [1])
+
+        # Invalid schema_version.
+        with self.assertRaises(store.StoreValidationError):
+            store.save_store(
+                self.store_path, {"schema_version": 2, "next_id": 2, "tasks": [task]}
+            )
+        # next_id <= max existing task id.
+        with self.assertRaises(store.StoreValidationError):
+            store.save_store(
+                self.store_path, {"schema_version": 1, "next_id": 1, "tasks": [task]}
+            )
+        # next_id == 0 (below minimum).
+        with self.assertRaises(store.StoreValidationError):
+            store.save_store(
+                self.store_path, {"schema_version": 1, "next_id": 0, "tasks": []}
+            )
+        # next_id as bool must be rejected (bool is not a valid int here).
+        with self.assertRaises(store.StoreValidationError):
+            store.save_store(
+                self.store_path, {"schema_version": 1, "next_id": True, "tasks": []}
+            )
+        # tasks not a list.
+        with self.assertRaises(store.StoreValidationError):
+            store.save_store(
+                self.store_path, {"schema_version": 1, "next_id": 2, "tasks": "nope"}
+            )
+        # Root not a mapping.
+        with self.assertRaises(store.StoreValidationError):
+            store.save_store(self.store_path, [1, 2])  # type: ignore[arg-type]
+        # Task item not a mapping.
+        with self.assertRaises(store.StoreValidationError):
+            store.save_store(
+                self.store_path, {"schema_version": 1, "next_id": 2, "tasks": [123]}
+            )
+        # Duplicate task IDs.
+        with self.assertRaises(store.StoreValidationError):
+            store.save_store(
+                self.store_path,
+                {"schema_version": 1, "next_id": 3, "tasks": [task, dict(task)]},
+            )
+
+    def test_task_not_found_on_mutating_ops_and_empty_list_for_missing_store(self) -> None:
+        """Finding 2 [MAJOR]: delete/start/stop/done raise TaskNotFoundError; list_tasks([]) on missing."""
+        store.add_task(self.store_path, "Only task", now=self.t0)
+
+        with self.assertRaises(store.TaskNotFoundError):
+            store.delete_task(self.store_path, 999)
+        with self.assertRaises(store.TaskNotFoundError):
+            store.start_task(self.store_path, 999, now=self.t0)
+        with self.assertRaises(store.TaskNotFoundError):
+            store.stop_task(self.store_path, 999, now=self.t0)
+        with self.assertRaises(store.TaskNotFoundError):
+            store.done_task(self.store_path, 999, now=self.t0)
+
+        missing_path = self.root / "does_not_exist.json"
+        self.assertFalse(missing_path.exists())
+        self.assertEqual(store.list_tasks(missing_path), [])
+        self.assertFalse(missing_path.exists())
+
+    def test_validate_task_and_load_store_schema_corruption_edge_cases(self) -> None:
+        """Finding 3 [MAJOR]: validate_task non-mapping + bad timestamps; load_store non-dict item + BOM."""
+        # validate_task: non-mapping input.
+        with self.assertRaises(store.StoreValidationError):
+            store.validate_task([1, 2])  # type: ignore[arg-type]
+
+        # validate_task: invalid / non-string / naive timestamp fields.
+        for field in ("created_at", "updated_at"):
+            with self.subTest(field=field, case="naive"):
+                with self.assertRaises(store.StoreValidationError):
+                    store.validate_task(self._valid_task(**{field: "2026-11-19T10:00:00"}))
+            with self.subTest(field=field, case="non_string"):
+                with self.assertRaises(store.StoreValidationError):
+                    store.validate_task(self._valid_task(**{field: 123}))
+            with self.subTest(field=field, case="garbage"):
+                with self.assertRaises(store.StoreValidationError):
+                    store.validate_task(self._valid_task(**{field: "not-a-date"}))
+
+        # active_timer_start: naive string (and only valid on in_progress).
+        with self.assertRaises(store.StoreValidationError):
+            store.validate_task(
+                self._valid_task(status="in_progress", active_timer_start="2026-11-19T10:00:00")
+            )
+        with self.assertRaises(store.StoreValidationError):
+            store.validate_task(self._valid_task(active_timer_start=123))
+
+        # completed_at: naive / non-string string when status is done.
+        with self.assertRaises(store.StoreValidationError):
+            store.validate_task(
+                self._valid_task(status="done", completed_at="2026-11-19T10:00:00")
+            )
+
+        # status=done with a non-None active_timer_start is rejected.
+        with self.assertRaises(store.StoreValidationError):
+            store.validate_task(
+                self._valid_task(
+                    status="done",
+                    completed_at="2026-11-19T10:00:00Z",
+                    active_timer_start="2026-11-19T10:00:00Z",
+                )
+            )
+
+        # load_store: tasks list containing a non-dict item -> StoreCorruptError, file preserved.
+        bad_items_path = self.root / "bad_items.json"
+        bad_items_bytes = json.dumps(
+            {"schema_version": 1, "next_id": 2, "tasks": [123]}
+        ).encode("utf-8")
+        bad_items_path.write_bytes(bad_items_bytes)
+        with self.assertRaises(store.StoreCorruptError):
+            store.load_store(bad_items_path)
+        self.assertEqual(bad_items_path.read_bytes(), bad_items_bytes)
+
+        # load_store: UTF-8 BOM-prefixed store file is rejected and bytes preserved untouched.
+        bom_path = self.root / "bom.json"
+        bom_bytes = b"\xef\xbb\xbf" + json.dumps(
+            {"schema_version": 1, "next_id": 2, "tasks": [self._valid_task()]}
+        ).encode("utf-8")
+        bom_path.write_bytes(bom_bytes)
+        with self.assertRaises(store.StoreCorruptError):
+            store.load_store(bom_path)
+        self.assertEqual(bom_path.read_bytes(), bom_bytes)
+
+    def test_defensive_copy_isolation_and_in_progress_filter(self) -> None:
+        """Finding 4 [MINOR]: returned dicts/tags are copies; list_tasks(status=in_progress) filters."""
+        created = store.add_task(
+            self.store_path, "Isolate me", tags=["api", "core"], now=self.t0
+        )
+
+        # Mutating the add_task return value must not affect persisted state.
+        created["title"] = "HACKED"
+        created["tags"].append("injected")
+        persisted = store.get_task(self.store_path, created["id"])
+        self.assertEqual(persisted["title"], "Isolate me")
+        self.assertEqual(persisted["tags"], ["api", "core"])
+
+        # Mutating a get_task return value must not affect persisted state.
+        fetched = store.get_task(self.store_path, created["id"])
+        fetched["tags"].append("more")
+        self.assertEqual(
+            store.get_task(self.store_path, created["id"])["tags"], ["api", "core"]
+        )
+
+        # Mutating a list_tasks return value must not affect persisted state.
+        listed = store.list_tasks(self.store_path)
+        listed[0]["tags"].append("leak")
+        self.assertEqual(
+            store.list_tasks(self.store_path)[0]["tags"], ["api", "core"]
+        )
+
+        # status=in_progress filtering returns only running/paused tasks.
+        store.add_task(self.store_path, "Second", now=self.t0)
+        store.start_task(self.store_path, created["id"], now=self.t0 + timedelta(minutes=1))
+        in_progress = store.list_tasks(self.store_path, status="in_progress")
+        self.assertEqual([t["id"] for t in in_progress], [created["id"]])
+        self.assertEqual(
+            [t["id"] for t in store.list_tasks(self.store_path, status="todo")],
+            [2],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
